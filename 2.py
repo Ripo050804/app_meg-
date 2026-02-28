@@ -1,7 +1,7 @@
 """
 APLIKASI KLASIFIKASI BATU MEGALITIKUM
 Fitur: Kamera, Upload, Info Kelas, Download PDF, Mobile-friendly
-Dilengkapi deteksi kualitas gambar, image enhancement, dan filter konten
+Dengan auto-download model dari Google Drive
 """
 
 import streamlit as st
@@ -14,6 +14,7 @@ from fpdf import FPDF
 import tempfile
 import cv2
 from io import BytesIO
+import gdown  # Tambahkan library ini
 
 # ==============================================
 # KONFIGURASI HALAMAN
@@ -38,9 +39,46 @@ DESKRIPSI_KELAS = {
     "monolit": "Monolit adalah batu tunggal berukuran besar yang didirikan sebagai monumen atau tanda suatu peristiwa penting."
 }
 
-# Kata kunci untuk deteksi objek non-batu (sederhana)
-NON_MEGALITH_KEYWORDS = ['kucing', 'anjing', 'mobil', 'pohon', 'rumah', 'orang', 'manusia', 
-                         'hewan', 'animal', 'cat', 'dog', 'car', 'tree', 'house', 'person']
+# ==============================================
+# KONFIGURASI GOOGLE DRIVE
+# ==============================================
+# GANTI FILE_ID INI DENGAN FILE ID ANDA!
+# Cara dapatkan: https://drive.google.com/file/d/1ABCxyz12345abcde67890/view
+# FILE_ID = "1ABCxyz12345abcde67890"
+FILE_ID = "1anqwxu65GSw2iQr9ISdHUBgh9D3H2uGt"  # <-- GANTI!
+
+# ==============================================
+# FUNGSI DOWNLOAD MODEL DARI GOOGLE DRIVE
+# ==============================================
+@st.cache_resource
+def download_and_load_model():
+    """Download model TFLite dari Google Drive jika belum ada"""
+    
+    model_path = "megalitikum_model.tflite"
+    
+    # Cek apakah model sudah ada
+    if not os.path.exists(model_path):
+        with st.spinner("🔄 Mendownload model (96 MB) dari Google Drive..."):
+            try:
+                url = f"https://drive.google.com/uc?id={FILE_ID}"
+                gdown.download(url, model_path, quiet=False)
+                st.success("✅ Model berhasil didownload!")
+            except Exception as e:
+                st.error(f"❌ Gagal download model: {str(e)}")
+                st.info("Coba upload model manual atau periksa FILE_ID")
+                return None, None, None
+    
+    # Load model TFLite
+    try:
+        import tensorflow as tf
+        interpreter = tf.lite.Interpreter(model_path=model_path)
+        interpreter.allocate_tensors()
+        input_details = interpreter.get_input_details()
+        output_details = interpreter.get_output_details()
+        return interpreter, input_details, output_details
+    except Exception as e:
+        st.error(f"❌ Gagal memuat model: {str(e)}")
+        return None, None, None
 
 # ==============================================
 # FUNGSI ENHANCEMENT GAMBAR
@@ -99,7 +137,7 @@ def adaptive_enhancement(image, blur_score, brightness, contrast):
     return image
 
 # ==============================================
-# FUNGSI DETEKSI OBJEK NON-BATU (SEDERHANA)
+# FUNGSI DETEKSI OBJEK NON-BATU
 # ==============================================
 def detect_non_megalith(image):
     """
@@ -210,21 +248,8 @@ def cek_kualitas_gambar(image):
         return "Tidak diketahui", f"Error analisis: {str(e)}", "", 0, 0, 0
 
 # ==============================================
-# LOAD TFLITE MODEL
+# FUNGSI LOAD CLASS NAMES
 # ==============================================
-@st.cache_resource
-def load_tflite_model():
-    try:
-        import tensorflow as tf
-        interpreter = tf.lite.Interpreter(model_path="megalitikum_model.tflite")
-        interpreter.allocate_tensors()
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-        return interpreter, input_details, output_details
-    except Exception as e:
-        st.error(f"❌ Gagal memuat model: {str(e)}")
-        return None, None, None
-
 @st.cache_data
 def load_class_names():
     try:
@@ -286,7 +311,8 @@ def buat_pdf_hasil(nama_file, kelas, confidence, top3, deskripsi, kualitas="", w
 # ==============================================
 # LOAD SEMUA DATA
 # ==============================================
-interpreter, input_details, output_details = load_tflite_model()
+# Download dan load model dari Google Drive
+interpreter, input_details, output_details = download_and_load_model()
 class_names = load_class_names()
 model_info = load_model_info()
 
@@ -296,13 +322,36 @@ model_info = load_model_info()
 with st.sidebar:
     st.image("https://via.placeholder.com/300x100?text=MEGALITIKUM", use_container_width=True)
     st.markdown("### 📊 Performa Model")
-    st.metric("Test Accuracy", f"{model_info['test_accuracy']*100:.2f}%")
-    st.metric("Best Validation", f"{model_info['best_val_accuracy_phase2']*100:.2f}%")
+    if interpreter is not None:
+        st.metric("Test Accuracy", f"{model_info['test_accuracy']*100:.2f}%")
+        st.metric("Best Validation", f"{model_info['best_val_accuracy_phase2']*100:.2f}%")
+    else:
+        st.error("Model tidak tersedia")
     st.markdown("---")
     st.markdown("### 🗿 Tentang Kelas")
     for nama in DESKRIPSI_KELAS.keys():
         with st.expander(nama):
             st.write(DESKRIPSI_KELAS[nama])
+
+# ==============================================
+# CEK MODEL
+# ==============================================
+if interpreter is None:
+    st.error("""
+    ❌ **Model tidak dapat dimuat!**
+    
+    Kemungkinan penyebab:
+    1. FILE_ID belum diganti dengan ID Google Drive Anda
+    2. File model belum diupload ke Google Drive
+    3. Koneksi internet bermasalah
+    
+    **Cara memperbaiki:**
+    1. Upload file `megalitikum_model.tflite` ke Google Drive
+    2. Set sharing ke "Anyone with the link"
+    3. Copy FILE_ID dari link
+    4. Ganti variable FILE_ID di bagian atas kode
+    """)
+    st.stop()
 
 # ==============================================
 # TAB UTAMA
