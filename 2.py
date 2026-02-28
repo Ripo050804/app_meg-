@@ -6,15 +6,14 @@ Dengan auto-download model dari Google Drive
 
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageStat
 import json
 import os
 import time
 from fpdf import FPDF
 import tempfile
-import cv2
 from io import BytesIO
-import gdown  # Tambahkan library ini
+import gdown
 
 # ==============================================
 # KONFIGURASI HALAMAN
@@ -42,10 +41,8 @@ DESKRIPSI_KELAS = {
 # ==============================================
 # KONFIGURASI GOOGLE DRIVE
 # ==============================================
-# GANTI FILE_ID INI DENGAN FILE ID ANDA!
-# Cara dapatkan: https://drive.google.com/file/d/1ABCxyz12345abcde67890/view
-# FILE_ID = "1ABCxyz12345abcde67890"
-FILE_ID = "1anqwxu65GSw2iQr9ISdHUBgh9D3H2uGt"  # <-- GANTI!
+# FILE_ID dari link Google Drive Anda
+FILE_ID = "1anqwxu65GSw2iQr9ISdHUBgh9D3H2uGt"  # <-- SUDAH DIISI
 
 # ==============================================
 # FUNGSI DOWNLOAD MODEL DARI GOOGLE DRIVE
@@ -81,7 +78,7 @@ def download_and_load_model():
         return None, None, None
 
 # ==============================================
-# FUNGSI ENHANCEMENT GAMBAR
+# FUNGSI ENHANCEMENT GAMBAR DENGAN PILLOW
 # ==============================================
 def enhance_image(image):
     """Tingkatkan kualitas gambar untuk prediksi lebih akurat"""
@@ -114,7 +111,7 @@ def adaptive_enhancement(image, blur_score, brightness, contrast):
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
-    # Jika blur, tambah sharpening lebih kuat
+    # Jika blur, tambah sharpening lebih kuat (gunakan nilai blur_score)
     if blur_score < 200:
         for _ in range(3):
             image = image.filter(ImageFilter.SHARPEN)
@@ -137,33 +134,33 @@ def adaptive_enhancement(image, blur_score, brightness, contrast):
     return image
 
 # ==============================================
-# FUNGSI DETEKSI OBJEK NON-BATU
+# FUNGSI DETEKSI OBJEK NON-BATU (TANPA OPENCV)
 # ==============================================
 def detect_non_megalith(image):
     """
     Deteksi sederhana apakah gambar mengandung objek non-batu
-    Menggunakan analisis warna dan tekstur
+    Menggunakan analisis warna dengan Pillow
     """
     try:
-        # Konversi ke array numpy
-        img_array = np.array(image.convert('RGB'))
+        # Konversi ke RGB
+        img = image.convert('RGB')
         
-        # 1. Analisis dominasi warna batu (abu-abu, coklat)
-        # Hitung rata-rata per channel
-        r_mean = np.mean(img_array[:,:,0])
-        g_mean = np.mean(img_array[:,:,1])
-        b_mean = np.mean(img_array[:,:,2])
+        # Dapatkan statistik warna
+        r, g, b = img.split()
+        r_mean = np.mean(np.array(r))
+        g_mean = np.mean(np.array(g))
+        b_mean = np.mean(np.array(b))
         
         # Batu cenderung memiliki nilai RGB yang mirip (grayscale)
         rgb_variance = np.var([r_mean, g_mean, b_mean])
         
-        # 2. Deteksi warna hijau (daun, rumput) - indikator non-batu
+        # Deteksi warna hijau (daun, rumput)
         green_dominance = (g_mean > r_mean * 1.2) and (g_mean > b_mean * 1.2)
         
-        # 3. Deteksi warna biru (langit, air)
+        # Deteksi warna biru (langit, air)
         blue_dominance = (b_mean > r_mean * 1.3) and (b_mean > g_mean * 1.3)
         
-        # 4. Deteksi warna cerah (bunga, benda warna-warni)
+        # Deteksi warna cerah
         color_variance = np.var([r_mean, g_mean, b_mean])
         high_color_variance = color_variance > 500
         
@@ -183,25 +180,26 @@ def detect_non_megalith(image):
         return False, f"Error deteksi: {str(e)}"
 
 # ==============================================
-# FUNGSI DETEKSI KUALITAS GAMBAR
+# FUNGSI DETEKSI KUALITAS GAMBAR (TANPA OPENCV)
 # ==============================================
 def cek_kualitas_gambar(image):
-    """Deteksi kualitas gambar (buruk/sedang/baik)"""
+    """Deteksi kualitas gambar (buruk/sedang/baik) menggunakan Pillow"""
     try:
-        # Convert PIL Image ke array numpy
-        img_array = np.array(image)
-        
-        # Convert ke grayscale untuk analisis
-        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        
-        # Hitung variance of Laplacian (untuk blur detection)
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        # Konversi ke grayscale untuk analisis
+        gray = image.convert('L')
+        img_array = np.array(gray)
         
         # Hitung brightness rata-rata
-        brightness = np.mean(gray)
+        brightness = np.mean(img_array)
         
         # Hitung kontras (standar deviasi)
-        contrast = np.std(gray)
+        contrast = np.std(img_array)
+        
+        # Estimasi blur menggunakan Laplacian variance sederhana
+        # Gunakan filter gradient sederhana
+        from scipy import ndimage
+        laplacian = ndimage.laplace(img_array)
+        laplacian_var = np.var(laplacian)
         
         # Klasifikasi kualitas
         kualitas = "Baik"
@@ -390,7 +388,16 @@ with tab1:
         # ==========================================
         # CEK KUALITAS DAN DETEKSI OBJEK
         # ==========================================
-        kualitas, pesan_kualitas, rekomendasi, blur_score, brightness, contrast = cek_kualitas_gambar(image)
+        try:
+            kualitas, pesan_kualitas, rekomendasi, blur_score, brightness, contrast = cek_kualitas_gambar(image)
+        except:
+            # Fallback jika scipy tidak tersedia
+            kualitas = "Baik"
+            pesan_kualitas = "Kualitas gambar baik"
+            rekomendasi = ""
+            blur_score = 0
+            brightness = np.mean(np.array(image.convert('L')))
+            contrast = np.std(np.array(image.convert('L')))
         
         # Deteksi objek non-batu
         is_non_megalith, deteksi_msg = detect_non_megalith(image)
