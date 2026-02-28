@@ -1,0 +1,34 @@
+{
+  "timestamp": "20260223_050620",
+  "model_architecture": "ResNet50 + Transfer Learning",
+  "input_size": [
+    224,
+    224,
+    3
+  ],
+  "num_classes": 7,
+  "class_names": [
+    "Arca",
+    "dolmen",
+    "menhir",
+    "dakon",
+    "batu_datar",
+    "Kubur_batu",
+    "monolit"
+  ],
+  "training_samples": 1326,
+  "validation_samples": 332,
+  "test_samples": 413,
+  "best_val_accuracy_phase1": 0.9698795080184937,
+  "best_val_accuracy_phase2": 0.9879518151283264,
+  "final_val_accuracy": 0.9849397540092468,
+  "final_val_loss": 0.5906479358673096,
+  "test_accuracy": 0.9782082438468933,
+  "test_loss": 0.6168033480644226,
+  "learning_rate_phase1": 0.0001,
+  "learning_rate_phase2": 3e-05,
+  "batch_size": 16,
+  "epochs_phase1": 50,
+  "epochs_phase2": 43,
+  "train_val_gap": 0.015060245990753174
+}
