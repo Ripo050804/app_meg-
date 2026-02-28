@@ -2,11 +2,12 @@
 APLIKASI KLASIFIKASI BATU MEGALITIKUM
 Fitur: Kamera, Upload, Info Kelas, Download PDF, Mobile-friendly
 Dengan auto-download model dari Google Drive
+Versi: Stabil untuk Streamlit Cloud
 """
 
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter, ImageStat
+from PIL import Image, ImageEnhance, ImageFilter
 import json
 import os
 import time
@@ -14,6 +15,8 @@ from fpdf import FPDF
 import tempfile
 from io import BytesIO
 import gdown
+import requests
+from pathlib import Path
 
 # ==============================================
 # KONFIGURASI HALAMAN
@@ -41,8 +44,7 @@ DESKRIPSI_KELAS = {
 # ==============================================
 # KONFIGURASI GOOGLE DRIVE
 # ==============================================
-# FILE_ID dari link Google Drive Anda
-FILE_ID = "1anqwxu65GSw2iQr9ISdHUBgh9D3H2uGt"  # <-- SUDAH DIISI
+FILE_ID = "1anqwxu65GSw2iQr9ISdHUBgh9D3H2uGt"  # FILE_ID Anda
 
 # ==============================================
 # FUNGSI DOWNLOAD MODEL DARI GOOGLE DRIVE
@@ -57,13 +59,23 @@ def download_and_load_model():
     if not os.path.exists(model_path):
         with st.spinner("🔄 Mendownload model (96 MB) dari Google Drive..."):
             try:
+                # Metode 1: Menggunakan gdown
                 url = f"https://drive.google.com/uc?id={FILE_ID}"
                 gdown.download(url, model_path, quiet=False)
                 st.success("✅ Model berhasil didownload!")
-            except Exception as e:
-                st.error(f"❌ Gagal download model: {str(e)}")
-                st.info("Coba upload model manual atau periksa FILE_ID")
-                return None, None, None
+            except Exception as e1:
+                try:
+                    # Metode 2: Menggunakan requests sebagai fallback
+                    url = f"https://drive.google.com/uc?export=download&id={FILE_ID}"
+                    response = requests.get(url, stream=True)
+                    with open(model_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    st.success("✅ Model berhasil didownload (metode alternatif)!")
+                except Exception as e2:
+                    st.error(f"❌ Gagal download model: {str(e1)}")
+                    st.info("Coba upload model manual atau periksa FILE_ID")
+                    return None, None, None
     
     # Load model TFLite
     try:
@@ -78,43 +90,40 @@ def download_and_load_model():
         return None, None, None
 
 # ==============================================
-# FUNGSI ENHANCEMENT GAMBAR DENGAN PILLOW
+# FUNGSI ENHANCEMENT GAMBAR
 # ==============================================
 def enhance_image(image):
     """Tingkatkan kualitas gambar untuk prediksi lebih akurat"""
     
-    # Konversi ke RGB jika perlu
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
-    # 1. Sharpening untuk mengurangi blur
+    # Sharpening
     image = image.filter(ImageFilter.SHARPEN)
-    image = image.filter(ImageFilter.SHARPEN)  # Double sharpen untuk blur parah
+    image = image.filter(ImageFilter.SHARPEN)
     
-    # 2. Tingkatkan kontras
+    # Kontras
     enhancer = ImageEnhance.Contrast(image)
     image = enhancer.enhance(1.3)
     
-    # 3. Tingkatkan ketajaman
+    # Ketajaman
     enhancer = ImageEnhance.Sharpness(image)
     image = enhancer.enhance(1.5)
     
-    # 4. Normalisasi brightness
+    # Brightness
     enhancer = ImageEnhance.Brightness(image)
     image = enhancer.enhance(1.1)
     
     return image
 
-def adaptive_enhancement(image, blur_score, brightness, contrast):
+def adaptive_enhancement(image, brightness, contrast):
     """Enhancement adaptif berdasarkan skor kualitas"""
     
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
-    # Jika blur, tambah sharpening lebih kuat (gunakan nilai blur_score)
-    if blur_score < 200:
-        for _ in range(3):
-            image = image.filter(ImageFilter.SHARPEN)
+    # Sharpening standar untuk semua gambar
+    image = image.filter(ImageFilter.SHARPEN)
     
     # Jika kontras rendah, tingkatkan kontras
     if contrast < 40:
@@ -134,116 +143,92 @@ def adaptive_enhancement(image, blur_score, brightness, contrast):
     return image
 
 # ==============================================
-# FUNGSI DETEKSI OBJEK NON-BATU (TANPA OPENCV)
+# FUNGSI DETEKSI OBJEK NON-BATU
 # ==============================================
 def detect_non_megalith(image):
-    """
-    Deteksi sederhana apakah gambar mengandung objek non-batu
-    Menggunakan analisis warna dengan Pillow
-    """
+    """Deteksi sederhana apakah gambar mengandung objek non-batu"""
     try:
-        # Konversi ke RGB
         img = image.convert('RGB')
-        
-        # Dapatkan statistik warna
         r, g, b = img.split()
+        
         r_mean = np.mean(np.array(r))
         g_mean = np.mean(np.array(g))
         b_mean = np.mean(np.array(b))
         
-        # Batu cenderung memiliki nilai RGB yang mirip (grayscale)
-        rgb_variance = np.var([r_mean, g_mean, b_mean])
+        # Deteksi warna hijau (tumbuhan)
+        if g_mean > r_mean * 1.2 and g_mean > b_mean * 1.2:
+            return True, "Gambar didominasi warna hijau (mungkin tumbuhan)"
         
-        # Deteksi warna hijau (daun, rumput)
-        green_dominance = (g_mean > r_mean * 1.2) and (g_mean > b_mean * 1.2)
-        
-        # Deteksi warna biru (langit, air)
-        blue_dominance = (b_mean > r_mean * 1.3) and (b_mean > g_mean * 1.3)
-        
-        # Deteksi warna cerah
-        color_variance = np.var([r_mean, g_mean, b_mean])
-        high_color_variance = color_variance > 500
-        
-        # Logika deteksi
-        if green_dominance:
-            return True, "Gambar didominasi warna hijau (mungkin tumbuhan/pohon)"
-        elif blue_dominance:
+        # Deteksi warna biru (langit/air)
+        if b_mean > r_mean * 1.3 and b_mean > g_mean * 1.3:
             return True, "Gambar didominasi warna biru (mungkin langit/air)"
-        elif high_color_variance and rgb_variance > 200:
+        
+        # Deteksi warna mencolok (batu cenderung abu-abu)
+        rgb_variance = np.var([r_mean, g_mean, b_mean])
+        if rgb_variance > 500:
             return True, "Gambar memiliki variasi warna tinggi (mungkin bukan batu)"
-        elif rgb_variance > 300:
-            return True, "Warna tidak seragam (mungkin objek non-batu)"
-        else:
-            return False, "Objek terdeteksi sebagai potensi batu"
-            
+        
+        return False, "Objek terdeteksi sebagai potensi batu"
+        
     except Exception as e:
         return False, f"Error deteksi: {str(e)}"
 
 # ==============================================
-# FUNGSI DETEKSI KUALITAS GAMBAR (TANPA OPENCV)
+# FUNGSI DETEKSI KUALITAS GAMBAR (TANPA SCIPY)
 # ==============================================
 def cek_kualitas_gambar(image):
-    """Deteksi kualitas gambar (buruk/sedang/baik) menggunakan Pillow"""
+    """Deteksi kualitas gambar menggunakan Pillow (tanpa scipy)"""
     try:
-        # Konversi ke grayscale untuk analisis
+        # Konversi ke grayscale
         gray = image.convert('L')
         img_array = np.array(gray)
         
-        # Hitung brightness rata-rata
+        # Hitung brightness dan kontras
         brightness = np.mean(img_array)
-        
-        # Hitung kontras (standar deviasi)
         contrast = np.std(img_array)
         
-        # Estimasi blur menggunakan Laplacian variance sederhana
-        # Gunakan filter gradient sederhana
-        from scipy import ndimage
-        laplacian = ndimage.laplace(img_array)
-        laplacian_var = np.var(laplacian)
+        # Estimasi blur sederhana (semakin tinggi variance, semakin tajam)
+        blur_score = np.var(img_array)
         
         # Klasifikasi kualitas
         kualitas = "Baik"
         pesan = []
         rekomendasi = []
         
-        # Deteksi blur
-        if laplacian_var < 100:
+        if blur_score < 300:
             kualitas = "Buruk"
             pesan.append("• Gambar terlalu blur/kabur")
-            rekomendasi.append("Gambar akan di-sharpen otomatis")
-        elif laplacian_var < 200:
+            rekomendasi.append("Gunakan gambar yang lebih tajam")
+        elif blur_score < 600:
             if kualitas == "Baik":
                 kualitas = "Sedang"
             pesan.append("• Gambar sedikit blur")
-            rekomendasi.append("Aplikasi akan meningkatkan ketajaman")
+            rekomendasi.append("Pastikan kamera tidak goyang")
         
-        # Deteksi brightness
         if brightness < 50:
             if kualitas == "Baik":
                 kualitas = "Sedang"
             pesan.append("• Gambar terlalu gelap")
-            rekomendasi.append("Kecerahan akan ditingkatkan")
+            rekomendasi.append("Gunakan pencahayaan lebih terang")
         elif brightness > 200:
             if kualitas == "Baik":
                 kualitas = "Sedang"
             pesan.append("• Gambar terlalu terang")
-            rekomendasi.append("Kecerahan akan dikurangi")
+            rekomendasi.append("Kurangi pencahayaan")
         
-        # Deteksi kontras rendah
-        if contrast < 40:
+        if contrast < 30:
             if kualitas == "Baik":
                 kualitas = "Sedang"
             pesan.append("• Kontras gambar rendah")
-            rekomendasi.append("Kontras akan ditingkatkan")
+            rekomendasi.append("Pilih gambar dengan kontras lebih jelas")
         
-        # Gabungkan pesan
         pesan_text = "\n".join(pesan) if pesan else "Kualitas gambar baik"
-        rekomendasi_text = "\n".join(rekomendasi) if rekomendasi else "Tidak perlu enhancement"
+        rekomendasi_text = "\n".join(rekomendasi) if rekomendasi else "Tidak perlu perbaikan"
         
-        return kualitas, pesan_text, rekomendasi_text, laplacian_var, brightness, contrast
+        return kualitas, pesan_text, rekomendasi_text, blur_score, brightness, contrast
         
     except Exception as e:
-        return "Tidak diketahui", f"Error analisis: {str(e)}", "", 0, 0, 0
+        return "Tidak diketahui", f"Error: {str(e)}", "", 0, 0, 0
 
 # ==============================================
 # FUNGSI LOAD CLASS NAMES
@@ -309,7 +294,6 @@ def buat_pdf_hasil(nama_file, kelas, confidence, top3, deskripsi, kualitas="", w
 # ==============================================
 # LOAD SEMUA DATA
 # ==============================================
-# Download dan load model dari Google Drive
 interpreter, input_details, output_details = download_and_load_model()
 class_names = load_class_names()
 model_info = load_model_info()
@@ -362,7 +346,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["📸 Prediksi", "ℹ️ Info Model", "📖 Pa
 with tab1:
     st.markdown("### 📤 Ambil Gambar")
     
-    # Layout responsif
     sumber = st.radio(
         "Pilih sumber gambar:",
         ["📁 Upload dari File", "📷 Ambil dengan Kamera"],
@@ -377,7 +360,6 @@ with tab1:
         gambar = st.camera_input("Ambil foto")
 
     if gambar:
-        # Tampilkan gambar asli
         image = Image.open(gambar)
         
         col1, col2 = st.columns(2)
@@ -385,19 +367,8 @@ with tab1:
         with col1:
             st.image(image, caption="Gambar Asli", use_container_width=True)
         
-        # ==========================================
-        # CEK KUALITAS DAN DETEKSI OBJEK
-        # ==========================================
-        try:
-            kualitas, pesan_kualitas, rekomendasi, blur_score, brightness, contrast = cek_kualitas_gambar(image)
-        except:
-            # Fallback jika scipy tidak tersedia
-            kualitas = "Baik"
-            pesan_kualitas = "Kualitas gambar baik"
-            rekomendasi = ""
-            blur_score = 0
-            brightness = np.mean(np.array(image.convert('L')))
-            contrast = np.std(np.array(image.convert('L')))
+        # CEK KUALITAS
+        kualitas, pesan_kualitas, rekomendasi, blur_score, brightness, contrast = cek_kualitas_gambar(image)
         
         # Deteksi objek non-batu
         is_non_megalith, deteksi_msg = detect_non_megalith(image)
@@ -414,19 +385,13 @@ with tab1:
                     st.info(f"**Masalah:**\n{pesan_kualitas}")
                 
                 if rekomendasi:
-                    st.caption(f"💡 **Enhancement:** {rekomendasi}")
+                    st.caption(f"💡 **Saran:** {rekomendasi}")
         
         # Tampilkan peringatan objek non-batu
         if is_non_megalith:
             st.error(f"❌ **Deteksi Objek:** {deteksi_msg}")
-            st.warning("""
-            ⚠️ **Gambar ini terdeteksi BUKAN batu megalitikum!**
+            st.warning("⚠️ Model hanya untuk batu megalitikum!")
             
-            Model hanya dilatih untuk mengklasifikasi BATU MEGALITIKUM.
-            Prediksi untuk gambar non-batu akan TIDAK AKURAT.
-            """)
-            
-            # Tanya apakah tetap lanjut
             lanjut = st.checkbox("Tetap lanjutkan prediksi? (Tidak disarankan)")
             if not lanjut:
                 st.stop()
@@ -439,18 +404,13 @@ with tab1:
                     st.error("Model tidak tersedia.")
                     st.stop()
                 
-                # ======================================
-                # ENHANCEMENT GAMBAR
-                # ======================================
-                enhanced_image = adaptive_enhancement(image, blur_score, brightness, contrast)
+                # Enhancement
+                enhanced_image = adaptive_enhancement(image, brightness, contrast)
                 
-                # Tampilkan gambar enhanced
                 with col2:
                     st.image(enhanced_image, caption="Gambar setelah Enhancement", use_container_width=True)
                 
-                # ======================================
-                # PREDIKSI
-                # ======================================
+                # Prediksi
                 predictions = predict_tflite(interpreter, input_details, output_details, enhanced_image)
                 pred_idx = int(np.argmax(predictions))
                 pred_class = class_names[pred_idx]
@@ -459,11 +419,10 @@ with tab1:
                 top_3_idx = np.argsort(predictions)[-3:][::-1]
                 top_3 = [(class_names[i], float(predictions[i])) for i in top_3_idx]
 
-                # Tampilkan hasil
+                # Hasil
                 st.success("### Hasil Prediksi")
                 conf_color = "green" if confidence > 0.8 else "orange" if confidence > 0.6 else "red"
                 
-                # Tambahkan warning khusus
                 warning_msg = ""
                 if is_non_megalith:
                     warning_msg = "Gambar terdeteksi non-batu, prediksi TIDAK AKURAT!"
@@ -497,7 +456,7 @@ with tab1:
                 }
                 st.bar_chart(chart_data, x="Kelas", y="Probabilitas", height=300)
 
-                # Tombol download PDF
+                # Download PDF
                 pdf_bytes = buat_pdf_hasil(
                     gambar.name if hasattr(gambar, 'name') else "foto_kamera.jpg",
                     pred_class,
@@ -539,12 +498,6 @@ with tab2:
     - Objek yang tidak terlihat jelas
     - Pencahayaan ekstrem
     - **Gambar NON-BATU** (hewan, tumbuhan, manusia, dll)
-    
-    **Saran penggunaan:**
-    - Gunakan gambar dengan pencahayaan cukup
-    - Pastikan objek terlihat jelas
-    - Hindari gambar buram atau goyang
-    - **HANYA gunakan gambar batu megalitikum**
     """)
     
     st.markdown("---")
@@ -563,23 +516,6 @@ with tab3:
     3. Klik tombol **Prediksi Sekarang**
     4. Lihat hasil klasifikasi, confidence, dan deskripsi
     5. **Download laporan PDF** jika diperlukan
-    
-    ### 💡 Tips Mendapatkan Hasil Akurat
-    - Gunakan gambar dengan **pencahayaan cukup**
-    - Pastikan **objek tidak blur**
-    - Objek harus **terlihat jelas** di tengah frame
-    - Hindari **background yang terlalu ramai**
-    - Untuk hasil terbaik, gunakan gambar **resolusi tinggi**
-    - **HANYA gunakan gambar batu megalitikum**
-    
-    ### ⚠️ Jika Hasil Tidak Akurat
-    Aplikasi akan mendeteksi kualitas gambar dan memberi peringatan jika:
-    - Gambar terlalu blur (akan di-sharpen otomatis)
-    - Pencahayaan kurang/lebih (akan dinormalisasi)
-    - Kontras rendah (akan ditingkatkan)
-    - **Gambar terdeteksi sebagai NON-BATU** (akan ditolak)
-    
-    Confidence score di bawah 60% menandakan prediksi kurang yakin.
     """)
     
     st.info("Aplikasi ini dioptimalkan untuk tampilan mobile. Anda dapat mengakses semua fitur dengan mudah di ponsel.")
@@ -595,22 +531,12 @@ with tab4:
     **Cara kerja filter:**
     - Analisis dominasi warna (hijau = tumbuhan, biru = langit/air)
     - Deteksi variasi warna (batu cenderung abu-abu seragam)
-    - Analisis tekstur (batu memiliki tekstur khas)
     
     **Jika gambar terdeteksi sebagai NON-batu:**
     - Aplikasi akan menampilkan peringatan
     - Prediksi TIDAK akan akurat
     - Disarankan untuk tidak melanjutkan
-    
-    **Filter ini membantu:**
-    - Mencegah prediksi salah pada gambar hewan/tumbuhan
-    - Memberi edukasi kepada pengguna
-    - Meningkatkan kepercayaan hasil
     """)
-    
-    # Demo deteksi
-    st.markdown("### 📝 Demo Deteksi")
-    st.write("Upload gambar untuk melihat cara kerja filter:")
     
     test_img = st.file_uploader("Upload gambar test", type=['jpg', 'jpeg', 'png'], key="test_filter")
     if test_img:
